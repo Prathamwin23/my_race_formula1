@@ -1,0 +1,502 @@
+{% extends 'base.html' %}
+
+{% block title %}Manager Dashboard - Field Operations System{% endblock %}
+
+{% block extra_css %}
+<style>
+    .stats-card {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        border-radius: 15px;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .stats-card .card-body {
+        padding: 1.5rem;
+    }
+    .stats-number {
+        font-size: 2.5rem;
+        font-weight: bold;
+        margin-bottom: 0.5rem;
+    }
+    .agent-card {
+        border-left: 4px solid #0d6efd;
+        transition: transform 0.2s;
+    }
+    .agent-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+    }
+    .online-indicator {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        display: inline-block;
+        margin-right: 5px;
+    }
+    .online { background-color: #28a745; }
+    .offline { background-color: #dc3545; }
+    .assignment-row {
+        cursor: pointer;
+    }
+    .assignment-row:hover {
+        background-color: #f8f9fa;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="row">
+    <div class="col-12">
+        <div class="d-flex justify-content-between align-items-center mb-4">
+            <h1><i class="fas fa-tachometer-alt me-2"></i>Manager Dashboard</h1>
+            <div class="btn-group" role="group">
+                <button type="button" class="btn btn-primary" onclick="refreshDashboard()">
+                    <i class="fas fa-sync-alt me-1"></i> Refresh
+                </button>
+                <button type="button" class="btn btn-success" data-bs-toggle="modal" data-bs-target="#bulkAssignModal">
+                    <i class="fas fa-tasks me-1"></i> Bulk Assign
+                </button>
+                <a href="{% url 'upload_clients' %}" class="btn btn-info">
+                    <i class="fas fa-upload me-1"></i> Upload Clients
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Statistics Cards -->
+<div class="row mb-4">
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number">{{ total_agents }}</div>
+                <div><i class="fas fa-users me-1"></i>Total Agents</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number">{{ active_agents }}</div>
+                <div><i class="fas fa-user-check me-1"></i>Active Agents</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number">{{ total_clients }}</div>
+                <div><i class="fas fa-building me-1"></i>Total Clients</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number">{{ active_assignments }}</div>
+                <div><i class="fas fa-clipboard-list me-1"></i>Active Tasks</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number">{{ completed_today }}</div>
+                <div><i class="fas fa-check-circle me-1"></i>Completed Today</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card stats-card">
+            <div class="card-body text-center">
+                <div class="stats-number" id="efficiency-rate">0%</div>
+                <div><i class="fas fa-chart-line me-1"></i>Efficiency</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row">
+    <!-- Real-time Map View -->
+    <div class="col-lg-8">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-map me-2"></i>Real-time Agent Locations</h5>
+                <div class="btn-group btn-group-sm float-end" role="group">
+                    <button type="button" class="btn btn-outline-primary" onclick="centerMap()">
+                        <i class="fas fa-crosshairs"></i> Center
+                    </button>
+                    <button type="button" class="btn btn-outline-primary" onclick="toggleTraffic()">
+                        <i class="fas fa-road"></i> Traffic
+                    </button>
+                </div>
+            </div>
+            <div class="card-body p-0">
+                <div id="agentMap" class="map-container" style="height: 500px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Agents Status Panel -->
+    <div class="col-lg-4">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-users me-2"></i>Agent Status</h5>
+            </div>
+            <div class="card-body p-0" style="max-height: 500px; overflow-y: auto;">
+                {% for agent_data in agents_data %}
+                <div class="agent-card p-3 border-bottom">
+                    <div class="d-flex justify-content-between align-items-start">
+                        <div>
+                            <h6 class="mb-1">
+                                <span class="online-indicator {% if agent_data.agent.is_active_agent %}online{% else %}offline{% endif %}"></span>
+                                {{ agent_data.agent.get_full_name|default:agent_data.agent.username }}
+                            </h6>
+                            <small class="text-muted">{{ agent_data.agent.phone|default:"No phone" }}</small>
+                        </div>
+                        <div class="text-end">
+                            {% if agent_data.current_assignment %}
+                                <span class="badge bg-primary">Assigned</span>
+                            {% else %}
+                                <span class="badge bg-success">Available</span>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    {% if agent_data.current_assignment %}
+                    <div class="mt-2">
+                        <div class="small">
+                            <strong>Client:</strong> {{ agent_data.current_assignment.client.name }}<br>
+                            <strong>Status:</strong> 
+                            <span class="status-{{ agent_data.current_assignment.status }}">
+                                {{ agent_data.current_assignment.get_status_display }}
+                            </span><br>
+                            <strong>Priority:</strong> 
+                            <span class="priority-{{ agent_data.current_assignment.client.priority }}">
+                                {{ agent_data.current_assignment.client.get_priority_display }}
+                            </span>
+                        </div>
+                        <div class="mt-2">
+                            <button class="btn btn-sm btn-outline-danger" 
+                                    onclick="cancelAssignment('{{ agent_data.current_assignment.id }}')">
+                                <i class="fas fa-times me-1"></i>Cancel
+                            </button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div class="mt-2">
+                        <button class="btn btn-sm btn-primary" 
+                                onclick="assignToAgent('{{ agent_data.agent.id }}')">
+                            <i class="fas fa-plus me-1"></i>Assign Task
+                        </button>
+                    </div>
+                    {% endif %}
+                </div>
+                {% empty %}
+                <div class="p-3 text-center text-muted">
+                    <i class="fas fa-users fa-2x mb-2"></i>
+                    <p>No agents available</p>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Assignments -->
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5><i class="fas fa-history me-2"></i>Recent Assignments</h5>
+                <a href="/admin/operations/assignment/" class="btn btn-sm btn-outline-primary float-end">
+                    View All
+                </a>
+            </div>
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="table table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Agent</th>
+                                <th>Client</th>
+                                <th>Status</th>
+                                <th>Priority</th>
+                                <th>Assigned</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for assignment in recent_assignments %}
+                            <tr class="assignment-row" data-assignment-id="{{ assignment.id }}">
+                                <td>
+                                    <strong>{{ assignment.agent.get_full_name|default:assignment.agent.username }}</strong>
+                                </td>
+                                <td>
+                                    <div>
+                                        <strong>{{ assignment.client.name }}</strong><br>
+                                        <small class="text-muted">{{ assignment.client.phone }}</small>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="badge bg-{% if assignment.status == 'completed' %}success{% elif assignment.status == 'in_progress' %}primary{% elif assignment.status == 'assigned' %}warning{% else %}danger{% endif %}">
+                                        {{ assignment.get_status_display }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <span class="priority-{{ assignment.client.priority }}">
+                                        {{ assignment.client.get_priority_display }}
+                                    </span>
+                                </td>
+                                <td>
+                                    <small>{{ assignment.assigned_at|date:"M d, H:i" }}</small>
+                                </td>
+                                <td>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-outline-primary" onclick="viewAssignment('{{ assignment.id }}')">
+                                            <i class="fas fa-eye"></i>
+                                        </button>
+                                        {% if assignment.status in 'assigned,in_progress' %}
+                                        <button class="btn btn-outline-danger" onclick="cancelAssignment('{{ assignment.id }}')">
+                                            <i class="fas fa-times"></i>
+                                        </button>
+                                        {% endif %}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr>
+                                <td colspan="6" class="text-center text-muted py-4">
+                                    <i class="fas fa-clipboard-list fa-2x mb-2"></i>
+                                    <p>No recent assignments</p>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bulk Assignment Modal -->
+<div class="modal fade" id="bulkAssignModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Bulk Assignment</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <form id="bulkAssignForm">
+                    <div class="mb-3">
+                        <label class="form-label">Assignment Type</label>
+                        <div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="assignment_type" id="closest" value="closest" checked>
+                                <label class="form-check-label" for="closest">
+                                    Assign by proximity (closest first)
+                                </label>
+                            </div>
+                            <div class="form-check">
+                                <input class="form-check-input" type="radio" name="assignment_type" id="priority" value="priority">
+                                <label class="form-check-label" for="priority">
+                                    Assign by priority (highest priority first)
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="maxAssignments" class="form-label">Max assignments per agent</label>
+                        <input type="number" class="form-control" id="maxAssignments" min="1" max="5" value="1">
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="performBulkAssignment()">
+                    <i class="fas fa-tasks me-1"></i>Assign All
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    let map;
+    let agentMarkers = {};
+    let clientMarkers = {};
+
+    // Initialize map
+    document.addEventListener('DOMContentLoaded', function() {
+        initializeMap();
+        calculateEfficiency();
+
+        // Auto-refresh every 30 seconds
+        setInterval(refreshDashboard, 30000);
+    });
+
+    function initializeMap() {
+        // Initialize Leaflet map centered on Bangalore
+        map = L.map('agentMap').setView([12.9716, 77.5946], 11);
+
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Load agent locations
+        loadAgentLocations();
+    }
+
+    function loadAgentLocations() {
+        {% for agent_data in agents_data %}
+        {% if agent_data.location %}
+        const agentIcon = L.divIcon({
+            className: 'agent-marker',
+            html: '<div style="background: {% if agent_data.current_assignment %}#ffc107{% else %}#28a745{% endif %}; width: 20px; height: 20px; border-radius: 50%; border: 3px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"></div>',
+            iconSize: [20, 20],
+            iconAnchor: [10, 10]
+        });
+
+        const marker = L.marker([{{ agent_data.location.y }}, {{ agent_data.location.x }}], {
+            icon: agentIcon
+        }).addTo(map);
+
+        marker.bindPopup(`
+            <div class="text-center">
+                <strong>{{ agent_data.agent.get_full_name|default:agent_data.agent.username }}</strong><br>
+                <small>{{ agent_data.agent.get_role_display }}</small><br>
+                {% if agent_data.current_assignment %}
+                <span class="badge bg-warning">Assigned</span><br>
+                <small>Client: {{ agent_data.current_assignment.client.name }}</small>
+                {% else %}
+                <span class="badge bg-success">Available</span>
+                {% endif %}
+            </div>
+        `);
+
+        agentMarkers['{{ agent_data.agent.id }}'] = marker;
+        {% endif %}
+        {% endfor %}
+    }
+
+    function refreshDashboard() {
+        window.location.reload();
+    }
+
+    function calculateEfficiency() {
+        const total = {{ active_assignments }} + {{ completed_today }};
+        const efficiency = total > 0 ? Math.round(({{ completed_today }} / total) * 100) : 0;
+        document.getElementById('efficiency-rate').textContent = efficiency + '%';
+    }
+
+    function centerMap() {
+        map.setView([12.9716, 77.5946], 11);
+    }
+
+    function toggleTraffic() {
+        // This would integrate with a traffic layer if available
+        alert('Traffic layer integration would go here');
+    }
+
+    function assignToAgent(agentId) {
+        if (!window.isWebSocketConnected()) {
+            alert('Connection lost. Please refresh the page.');
+            return;
+        }
+
+        // Auto-assign closest client
+        fetch('/api/auto-assign/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCookie('csrftoken')
+            },
+            body: JSON.stringify({
+                agent_id: agentId,
+                type: 'closest'
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+            } else {
+                showNotification(data.message, 'success');
+                setTimeout(() => window.location.reload(), 2000);
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Failed to assign client');
+        });
+    }
+
+    function cancelAssignment(assignmentId) {
+        if (!confirm('Are you sure you want to cancel this assignment?')) {
+            return;
+        }
+
+        if (!window.isWebSocketConnected()) {
+            alert('Connection lost. Please refresh the page.');
+            return;
+        }
+
+        window.sendWebSocketMessage({
+            type: 'cancel_assignment',
+            assignment_id: assignmentId,
+            reason: 'Cancelled by manager'
+        });
+    }
+
+    function viewAssignment(assignmentId) {
+        window.open('/admin/operations/assignment/' + assignmentId + '/change/', '_blank');
+    }
+
+    function performBulkAssignment() {
+        const assignmentType = document.querySelector('input[name="assignment_type"]:checked').value;
+        const maxAssignments = document.getElementById('maxAssignments').value;
+
+        // This would make multiple API calls to assign available clients
+        alert('Bulk assignment feature would be implemented here');
+
+        // Close modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('bulkAssignModal'));
+        modal.hide();
+    }
+
+    // Custom WebSocket message handler
+    window.handleCustomWebSocketMessage = function(data) {
+        if (data.type === 'location_update') {
+            updateAgentLocationOnMap(data);
+        }
+    };
+
+    window.updateAgentLocationOnMap = function(data) {
+        const marker = agentMarkers[data.agent_id];
+        if (marker) {
+            marker.setLatLng([data.latitude, data.longitude]);
+        }
+    };
+
+    // Utility function to get CSRF token
+    function getCookie(name) {
+        let cookieValue = null;
+        if (document.cookie && document.cookie !== '') {
+            const cookies = document.cookie.split(';');
+            for (let i = 0; i < cookies.length; i++) {
+                const cookie = cookies[i].trim();
+                if (cookie.substring(0, name.length + 1) === (name + '=')) {
+                    cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+                    break;
+                }
+            }
+        }
+        return cookieValue;
+    }
+</script>
+{% endblock %}

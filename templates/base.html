@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Field Operations System{% endblock %}</title>
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    {% block extra_css %}{% endblock %}
+
+    <style>
+        .navbar-brand {
+            font-weight: bold;
+        }
+        .status-assigned { color: #ffc107; }
+        .status-in-progress { color: #0d6efd; }
+        .status-completed { color: #198754; }
+        .status-cancelled { color: #dc3545; }
+        .priority-1 { color: #6c757d; }
+        .priority-2 { color: #0d6efd; }
+        .priority-3 { color: #ffc107; }
+        .priority-4 { color: #dc3545; font-weight: bold; }
+        .map-container { height: 400px; }
+        .agent-location { background: #0d6efd; }
+        .client-location { background: #dc3545; }
+        .connection-status { 
+            position: fixed; 
+            top: 70px; 
+            right: 20px; 
+            z-index: 1000; 
+        }
+        .connection-online { background: #198754; }
+        .connection-offline { background: #dc3545; }
+        .notification-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            padding: 0.25em 0.6em;
+            font-size: 0.75em;
+            background: #dc3545;
+            color: white;
+            border-radius: 10px;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary">
+        <div class="container">
+            <a class="navbar-brand" href="{% url 'home' %}">
+                <i class="fas fa-map-marked-alt me-2"></i>
+                Field Operations System
+            </a>
+
+            {% if user.is_authenticated %}
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav me-auto">
+                    {% if user.role == 'manager' %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'manager_dashboard' %}">
+                            <i class="fas fa-tachometer-alt me-1"></i> Dashboard
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'upload_clients' %}">
+                            <i class="fas fa-upload me-1"></i> Upload Clients
+                        </a>
+                    </li>
+                    <li class="nav-item">
+                        <a class="nav-link" href="/admin/">
+                            <i class="fas fa-cog me-1"></i> Admin
+                        </a>
+                    </li>
+                    {% else %}
+                    <li class="nav-item">
+                        <a class="nav-link" href="{% url 'agent_dashboard' %}">
+                            <i class="fas fa-map me-1"></i> My Dashboard
+                        </a>
+                    </li>
+                    {% endif %}
+                </ul>
+
+                <ul class="navbar-nav">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-bs-toggle="dropdown">
+                            <i class="fas fa-user me-1"></i>
+                            {{ user.get_full_name|default:user.username }}
+                            <span class="badge bg-secondary ms-1">{{ user.get_role_display }}</span>
+                        </a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/admin/password_change/">
+                                <i class="fas fa-key me-1"></i> Change Password
+                            </a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/admin/logout/">
+                                <i class="fas fa-sign-out-alt me-1"></i> Logout
+                            </a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+            {% endif %}
+        </div>
+    </nav>
+
+    <!-- Connection Status Indicator -->
+    <div id="connectionStatus" class="badge connection-offline connection-status" style="display: none;">
+        <i class="fas fa-wifi me-1"></i>
+        <span id="connectionText">Connecting...</span>
+    </div>
+
+    <!-- Main Content -->
+    <main class="container-fluid mt-4">
+        <!-- Messages -->
+        {% if messages %}
+        <div class="row">
+            <div class="col-12">
+                {% for message in messages %}
+                <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                    {{ message }}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-light text-center text-muted py-3 mt-5">
+        <div class="container">
+            <small>&copy; 2025 Field Operations System. Built with Django & Bootstrap.</small>
+        </div>
+    </footer>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- WebSocket Connection -->
+    <script>
+        let socket = null;
+        let reconnectInterval = null;
+        let isConnected = false;
+
+        function initWebSocket() {
+            if (!{{ user.is_authenticated|yesno:"true,false" }}) {
+                return;
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + window.location.host + '/ws/{{ user.role }}/';
+
+            socket = new WebSocket(wsUrl);
+
+            socket.onopen = function(e) {
+                console.log('WebSocket connected');
+                isConnected = true;
+                updateConnectionStatus(true);
+
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+
+                // Send ping every 30 seconds to keep connection alive
+                setInterval(() => {
+                    if (socket.readyState === WebSocket.OPEN) {
+                        socket.send(JSON.stringify({
+                            type: 'ping',
+                            timestamp: new Date().toISOString()
+                        }));
+                    }
+                }, 30000);
+            };
+
+            socket.onmessage = function(e) {
+                const data = JSON.parse(e.data);
+                handleWebSocketMessage(data);
+            };
+
+            socket.onclose = function(e) {
+                console.log('WebSocket disconnected');
+                isConnected = false;
+                updateConnectionStatus(false);
+
+                // Attempt to reconnect every 5 seconds
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(() => {
+                        console.log('Attempting to reconnect...');
+                        initWebSocket();
+                    }, 5000);
+                }
+            };
+
+            socket.onerror = function(e) {
+                console.error('WebSocket error:', e);
+                updateConnectionStatus(false);
+            };
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusElement = document.getElementById('connectionStatus');
+            const textElement = document.getElementById('connectionText');
+
+            if (connected) {
+                statusElement.className = 'badge connection-online connection-status';
+                textElement.textContent = 'Online';
+                setTimeout(() => {
+                    statusElement.style.display = 'none';
+                }, 3000);
+            } else {
+                statusElement.className = 'badge connection-offline connection-status';
+                textElement.textContent = 'Offline';
+                statusElement.style.display = 'block';
+            }
+        }
+
+        function handleWebSocketMessage(data) {
+            console.log('WebSocket message:', data);
+
+            switch(data.type) {
+                case 'connection_established':
+                    console.log('Connected as:', data.message);
+                    break;
+                case 'new_assignment':
+                case 'assignment_notification':
+                    handleNewAssignment(data);
+                    break;
+                case 'assignment_update':
+                    handleAssignmentUpdate(data);
+                    break;
+                case 'location_update':
+                    handleLocationUpdate(data);
+                    break;
+                case 'assignment_cancelled':
+                    handleAssignmentCancelled(data);
+                    break;
+                case 'error':
+                    console.error('WebSocket error:', data.message);
+                    showNotification('Error: ' + data.message, 'error');
+                    break;
+                case 'pong':
+                    // Keep alive response
+                    break;
+                default:
+                    if (window.handleCustomWebSocketMessage) {
+                        window.handleCustomWebSocketMessage(data);
+                    }
+            }
+        }
+
+        function handleNewAssignment(data) {
+            showNotification(data.message, 'success');
+
+            // Refresh page if this is the agent dashboard
+            if (window.location.pathname.includes('/agent/')) {
+                setTimeout(() => {
+                    window.location.reload();
+                }, 2000);
+            }
+        }
+
+        function handleAssignmentUpdate(data) {
+            showNotification(data.message, 'info');
+
+            // Update UI if needed
+            if (window.updateAssignmentStatus) {
+                window.updateAssignmentStatus(data);
+            }
+        }
+
+        function handleLocationUpdate(data) {
+            // Update map if available
+            if (window.updateAgentLocationOnMap) {
+                window.updateAgentLocationOnMap(data);
+            }
+        }
+
+        function handleAssignmentCancelled(data) {
+            showNotification(data.message, 'warning');
+
+            // Refresh page
+            setTimeout(() => {
+                window.location.reload();
+            }, 2000);
+        }
+
+        function showNotification(message, type = 'info') {
+            const alertClass = {
+                'success': 'alert-success',
+                'error': 'alert-danger',
+                'warning': 'alert-warning',
+                'info': 'alert-info'
+            }[type] || 'alert-info';
+
+            const alertHtml = `
+                <div class="alert ${alertClass} alert-dismissible fade show" role="alert">
+                    ${message}
+                    <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                </div>
+            `;
+
+            // Insert at the beginning of main content
+            const mainContent = document.querySelector('main .container-fluid');
+            if (mainContent) {
+                mainContent.insertAdjacentHTML('afterbegin', alertHtml);
+
+                // Auto-dismiss after 5 seconds
+                setTimeout(() => {
+                    const alert = mainContent.querySelector('.alert');
+                    if (alert) {
+                        const bsAlert = new bootstrap.Alert(alert);
+                        bsAlert.close();
+                    }
+                }, 5000);
+            }
+        }
+
+        // Initialize WebSocket when page loads
+        document.addEventListener('DOMContentLoaded', function() {
+            initWebSocket();
+        });
+
+        // Expose functions globally for custom usage
+        window.sendWebSocketMessage = function(message) {
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.send(JSON.stringify(message));
+            }
+        };
+
+        window.isWebSocketConnected = function() {
+            return isConnected;
+        };
+    </script>
+
+    {% block extra_js %}{% endblock %}
+</body>
+</html>
